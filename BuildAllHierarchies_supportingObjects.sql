@@ -95,6 +95,47 @@ SELECT @output = @SelfReferenceTrail_WID
     RETURN @output
 END;
 
+GO
+
+use WorkArea
+go
+drop FUNCTION if exists [NETID\jabbott3].fn_getSelfRefBottomUpTrail_byRefID ;
+go
+CREATE FUNCTION [NETID\jabbott3].fn_getSelfRefBottomUpTrail_byRefID  (@businessObject varchar(100), @TopLevelNodeName varchar(500), @WID char(32))
+RETURNS varchar(8000)
+BEGIN
+   DECLARE @SelfReferenceTrail varchar(8000)=''
+
+;WITH CTE as 
+( SELECT base.hierarchyNodeRefID
+     ,  base.hierarchyNodeName  as hierarchyNodeName
+	 , base.businessObject
+	 ,base.TopLevelNodeName
+	 ,base.ParentWID
+	 , 1 AS RecursionLevel 
+  FROM WorkArea.[NETID\jabbott3].AllHierarchies base
+  WHERE base.businessObject=@businessObject
+  AND   base.TopLevelNodeName = @TopLevelNodeName
+  AND   base.hierarchyNodeWID = @WID 
+UNION ALL
+  SELECT parent.hierarchyNodeRefID
+     , parent.hierarchyNodeName 
+	 , parent.businessObject
+	 , parent.TopLevelNodeName
+	 , parent.ParentWID
+	 , child.RecursionLevel + 1 AS RecursionLevel
+  FROM WorkArea.[NETID\jabbott3].AllHierarchies parent
+  INNER JOIN CTE child ON child.businessObject=parent.businessObject AND parent.TopLevelNodeName=child.TopLevelNodeName AND  parent.hierarchyNodeWID = child.ParentWID
+  WHERE child.businessObject=@businessObject
+  AND   child.TopLevelNodeName = @TopLevelNodeName
+  
+)
+SELECT top 20 @SelfReferenceTrail = @SelfReferenceTrail + '[' + hierarchyNodeRefID +'] '
+from CTE
+order by RecursionLevel
+
+    RETURN @SelfReferenceTrail
+END;
 
 
 GO
