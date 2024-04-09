@@ -91,6 +91,9 @@ DECLARE @ListSeparator              char(1) = ':'
 	  , @CMD                        nvarchar(max)
 DECLARE @params                     nvarchar(255) = N'@ListSeparator char(1) = ' +''''+@ListSeparator+''''
 
+--------------------------------------------------
+-- set up the base query text
+--------------------------------------------------
 SET @CMD_buildHierarchies_Type1=N' 
 ;WITH AllLevels_CTE AS (
       SELECT h.(BusinessObjectToken)Hierarchy_WID AS hierarchyNodeWID
@@ -166,6 +169,10 @@ INSERT WorkArea.[NETID\jabbott3].AllHierarchies (
    ORDER BY  a.TopLevelNodeName
            , a.InLineColonDelim_Hierarchy,RecursionLevel;'
 
+--------------------------------------------------
+-- modify the base query for the various
+-- Staging structure types
+--------------------------------------------------
 -- cope with type 2 differences
 SET @CMD_buildHierarchies_Type2 = REPLACE(
                                       REPLACE(
@@ -173,7 +180,10 @@ SET @CMD_buildHierarchies_Type2 = REPLACE(
                                       , '(BusinessObjectToken)Hierarchy_OrganizationSubtype_Name', '(BusinessObjectToken)Hierarchy_Subtype_Name')
 								  , '(BusinessObjectToken)Hierarchy_IDs_(BusinessObjectToken)HierarchyID','(BusinessObjectToken)Hierarchy_IDs_OrganizationReferenceID')
 
--- cope with type 3 differences
+--------------------------------------------------
+-- breaking up type 3 into separate statements
+-- to simplify reading the complex replacements
+--------------------------------------------------
 SET @CMD_buildHierarchies_Type3 = REPLACE(
                                       REPLACE(
 									      REPLACE(@CMD_buildHierarchies_Type1,'(BusinessObjectToken)Hierarchy_Name','Name')
@@ -196,11 +206,15 @@ SELECT @CMD_buildHierarchies_Type3 = REPLACE(
 -- cope with type 4 differences
 SET @CMD_buildHierarchies_Type4 =  REPLACE(@CMD_buildHierarchies_Type1, '(BusinessObjectToken)Hierarchy_OrganizationSubtype_Name', '(BusinessObjectToken)Hierarchy_Subtype_Name')
 
---breaking up type5 into separate statements to simplify reading the complex replacements
+-- cope with type 5 differences
 SET @CMD_buildHierarchies_Type5 = REPLACE(
 										 REPLACE(@CMD_buildHierarchies_Type1, 'child.(BusinessObjectToken)Hierarchy_OrganizationSubtype_Name', 'NULL')
 								 ,'h.(BusinessObjectToken)Hierarchy_OrganizationSubtype_Name','NULL')
 
+--------------------------------------------------
+-- loop through all business objects building all
+-- hierarchies
+--------------------------------------------------
 DECLARE @counter int = 1
       , @max int = (SELECT max(BusinessObjectID) FROM #BusinessObjects)
 
@@ -239,28 +253,39 @@ WHILE @counter < @max+1
    END
 GO
 
+--------------------------------------------------
+-- Clean up some simple problems in the data
+--------------------------------------------------
+-- Remove inactive nodes
 DELETE WorkArea.[NETID\jabbott3].AllHierarchies
 where TopLevelNodeName like '%inactive%'
 GO
+-- Remove erroneous nodes (not toplevel and no parent)
 DELETE WorkArea.[NETID\jabbott3].AllHierarchies
 where RecursionLevel=1
 and (hierarchyNodeName NOT LIKE '%01%'
 and hierarchyNodeName NOT LIKE 'All %')
 GO
+-- Remove child nodes of those erroneous nodes (not toplevel and no parent)
 delete from WorkArea.[NETID\jabbott3].AllHierarchies
 where RecursionLevel<>1
 and ParentWID NOT IN (SELECT hierarchyNodeWID from WorkArea.[NETID\jabbott3].AllHierarchies)
 GO
+--------------------------------------------------
+-- Create indexes to speed up processing 
+--------------------------------------------------
 CREATE INDEX IX_AllHierarchies_1 ON WorkArea.[NETID\jabbott3].AllHierarchies(businessObject)
 CREATE INDEX IX_AllHierarchies_2 ON WorkArea.[NETID\jabbott3].AllHierarchies(businessObject, TopLevelNodeName)
 CREATE INDEX IX_AllHierarchies_4 ON WorkArea.[NETID\jabbott3].AllHierarchies(businessObject, TopLevelNodeName, hierarchyNodeWID)
 
 GO
+--------------------------------------------------
+-- update breadcrumb columns using UDFs
+--------------------------------------------------
 update c
 set Parent_AllHierarchiesID = p.AllHierarchiesID
 from WorkArea.[NETID\jabbott3].AllHierarchies c
 inner join WorkArea.[NETID\jabbott3].AllHierarchies p on p.hierarchyNodeWID=c.ParentWID and p.businessObject=c.businessObject and p.TopLevelNodeName=c.TopLevelNodeName
-GO
 
 update a
 set SelfRefBottomUpTrail_byName = [NETID\jabbott3].fn_getSelfRefBottomUpTrail_byName(businessObject, TopLevelNodeName, hierarchyNodeWID)
@@ -281,15 +306,21 @@ from WorkArea.[NETID\jabbott3].AllHierarchies a
 update a
 set SelfRefTopDownTrail_byAllHierarchiesID = [NETID\jabbott3].fn_getSelfRefTopDownTrail_byAllHierarchiesID(businessObject, TopLevelNodeName, hierarchyNodeWID)
 from WorkArea.[NETID\jabbott3].AllHierarchies a
-GO
+
 update a
 set BinarySortPath = [NETID\jabbott3].fn_getSelfRefTopDownTrail_byBinarySortValue(businessObject, TopLevelNodeName, hierarchyNodeWID)
 from WorkArea.[NETID\jabbott3].AllHierarchies a
 GO
 
+--------------------------------------------------
+-- update LeftBoundary for nested set paradigm
+--------------------------------------------------
 UPDATE WorkArea.[NETID\jabbott3].AllHierarchies 
 SET LeftBoundary = 2 * hierarchyOrder - RecursionLevel
 GO
+--------------------------------------------------
+-- update RightBoundary for nested set paradigm
+--------------------------------------------------
 ;WITH cteCountSubs AS (
    SELECT hierarchyOrder = CAST(SUBSTRING(h.BinarySortPath,t.N,4) AS INT)
         , NodeCount  = COUNT(*) --Includes current node
@@ -310,5 +341,8 @@ GROUP BY SUBSTRING(h.BinarySortPath,t.N,4)
       AND h.TopLevelNodeName = downline.TopLevelNodeName
 
 GO
+--------------------------------------------------
+-- Add index to support common queries employing RefID 
+--------------------------------------------------
 CREATE INDEX IX_AllHierarchies_5 ON WorkArea.[NETID\jabbott3].AllHierarchies(businessObject, TopLevelNodeName, hierarchyNodeRefID)
 GO
